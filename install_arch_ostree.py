@@ -181,6 +181,7 @@ class ArchOstreeInstaller:
             
             # Пароль root
             f"echo 'root:password' | arch-chroot {self.deploy_path} chpasswd",
+            f"echo '{self.config['DEFAULT']['username']}:password' | arch-chroot {self.deploy_path} chpasswd",
             
             # Сетевой менеджер
             f"arch-chroot {self.deploy_path} systemctl enable NetworkManager",
@@ -254,8 +255,13 @@ options root=LABEL=arch-ostree rw rootflags=subvol=@ ostree=/ostree/boot.1/arch/
         # Настройка Flatpak
         self.run_command(f"arch-chroot {self.deploy_path} flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo")
         
+        # Установка Flatpak приложений
+        apps = self.config['FLATPAK']['apps'].split()
+        for app in apps:
+            self.run_command(f"arch-chroot {self.deploy_path} runuser -l {self.config['DEFAULT']['username']} -c 'flatpak install -y flathub {app}'")
+        
         # Настройка Podman для пользователя
-        self.run_command(f"arch-chroot {self.deploy_path} systemctl enable --now podman.socket")
+        self.run_command(f"arch-chroot {self.deploy_path} systemctl enable podman.socket")
         
     def create_ostree_deployment(self):
         """Создание развертывания OSTree"""
@@ -299,10 +305,31 @@ fi
         
         self.run_command(f"chmod +x {update_script}")
         
+        # Создание скрипта для Distrobox
+        distrobox_script = self.deploy_path / "usr/local/bin/setup-devenv"
+        with open(distrobox_script, 'w') as f:
+            f.write("""#!/bin/bash
+# Development Environment Setup Script
+
+echo "Создание окружения разработки..."
+
+# Создание контейнера Arch Linux для разработки
+distrobox-create --name arch-dev --image archlinux:latest
+
+# Вход в контейнер и установка пакетов
+distrobox-enter arch-dev -- sudo pacman -Syu --noconfirm
+distrobox-enter arch-dev -- sudo pacman -S --noconfirm base-devel git python nodejs npm go rust
+
+echo "Окружение разработки готово!"
+echo "Используйте: distrobox-enter arch-dev"
+""")
+        
+        self.run_command(f"chmod +x {distrobox_script}")
+        
     def install(self, disk):
         """Основной метод установки"""
         try:
-            self.log.info("Начало установки Arch Linux с OSTree")
+            self.log.info("Начало установки Arch Linux с OSTREE")
             
             if not self.check_prerequisites():
                 sys.exit(1)
@@ -341,13 +368,13 @@ fi
         config['PACKAGES'] = {
             'base': 'base base-devel linux linux-firmware',
             'network': 'networkmanager iwd',
-            'utils': 'sudo nano vim git curl wget',
+            'utils': 'sudo nano vim git curl wget fish zsh',
             'flatpak': 'flatpak',
             'distrobox': 'distrobox podman toolbox'
         }
         
         config['FLATPAK'] = {
-            'apps': 'org.mozilla.firefox org.videolan.VLC org.gimp.GIMP org.libreoffice.LibreOffice'
+            'apps': 'org.mozilla.firefox org.videolan.VLC org.gimp.GIMP org.libreoffice.LibreOffice org.telegram.desktop com.github.tchx84.Flatseal'
         }
         
         with open(output_file, 'w') as f:
@@ -357,7 +384,7 @@ fi
 
 def main():
     parser = argparse.ArgumentParser(description='Arch Linux OSTree Installer')
-    parser.add_argument('disk', help='Target disk (e.g., /dev/sda)')
+    parser.add_argument('disk', nargs='?', help='Target disk (e.g., /dev/sda)')
     parser.add_argument('--config', help='Configuration file')
     parser.add_argument('--create-config', help='Create sample config file')
     
@@ -370,12 +397,17 @@ def main():
         return
         
     if not args.disk:
-        parser.print_help()
+        print("Ошибка: необходимо указать целевой диск")
+        print("Пример использования: python install_arch_ostree.py /dev/sda")
+        print("\nДополнительные опции:")
+        print("  --create-config FILE    Создать пример конфигурационного файла")
+        print("  --config FILE           Использовать указанный конфигурационный файл")
         return
         
     # Подтверждение
-    print(f"ВНИМАНИЕ: Это сотрет все данные на диске {args.disk}!")
-    confirm = input("Продолжить? (yes/NO): ")
+    print(f"\n⚠️  ВНИМАНИЕ: Это сотрет все данные на диске {args.disk}!")
+    print("Убедитесь, что выбрали правильный диск!")
+    confirm = input("Продолжить установку? (yes/NO): ")
     
     if confirm.lower() != 'yes':
         print("Установка отменена")
